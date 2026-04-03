@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "825386782609",
+    "firebase_url": "https://feed-96bfe-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "feed-96bfe",
+    "storage_bucket": "feed-96bfe.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:825386782609:android:cf35fac7f856aac692d430",
+        "android_client_info": {
+          "package_name": "com.personal.feed"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBs5SxL3D8odDs8Mh38-jkY26_bQKjgh0c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:825386782609:android:7c4649804b27f26a92d430",
+        "android_client_info": {
+          "package_name": "com.personal.feedcat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBs5SxL3D8odDs8Mh38-jkY26_bQKjgh0c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
