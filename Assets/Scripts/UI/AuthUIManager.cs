@@ -4,18 +4,14 @@ using UnityEngine.UI;
 using TMPro;
 
 // =============================================================================
-// AuthUIManager.cs — FIX BUTTONS
+// AuthUIManager.cs — FIX BUTTONS + FIX CURSOR + TAB/ENTER NAVIGATION
 //
-// ROOT CAUSE:
-//   • SetButtonsInteractable(false) trong Start() + chờ IsInitialized trong Update
-//     → nếu Firebase chậm hoặc Update chạy sau 1 frame thì buttons bị disabled lâu
-//   • Button onClick KHÔNG được gán bằng code → phụ thuộc hoàn toàn vào Inspector
-//
-// FIX:
-//   • Gán onClick cho tất cả buttons bằng code trong Awake() — không phụ thuộc Inspector
-//   • Buttons luôn interactable = true, chỉ disable trong lúc loading
-//   • Dùng Coroutine thay Update để bind events — sạch hơn, không poll mỗi frame
-//   • IsAuthReady() vẫn giữ để guard trước khi gọi Firebase
+// TÍNH NĂNG MỚI:
+//   • Nhấn Enter hoặc Tab tại mỗi field → focus sang field tiếp theo
+//   • Login  : Email → Password → [Submit]
+//   • Register: Name → Email → Password → Confirm → [Submit]
+//   • Hoạt động trên cả Android (keyboard Next) lẫn Laptop (Tab/Enter)
+//   • onSubmit bắt Enter | Update() bắt Tab | lineType=SingleLine trên tất cả
 // =============================================================================
 
 public class AuthUIManager : MonoBehaviour
@@ -41,21 +37,41 @@ public class AuthUIManager : MonoBehaviour
     [SerializeField] private Button         goToLoginButton;
     [SerializeField] private TMP_Text       registerErrorText;
 
+    // field đang được focus — để Update() biết Tab đang ở đâu
+    private TMP_InputField _tabFocused;
+
     // =========================================================================
     // LIFECYCLE
     // =========================================================================
 
     private void Awake()
     {
-        // ── Gán onClick bằng code — không phụ thuộc Inspector ────────────────
-        // Các listener cũ trong Inspector vẫn chạy bình thường, AddListener chỉ thêm
+        // ── onClick ───────────────────────────────────────────────────────────
         if (loginButton)        loginButton.onClick.AddListener(OnLoginButtonClicked);
         if (registerButton)     registerButton.onClick.AddListener(OnRegisterButtonClicked);
         if (goToRegisterButton) goToRegisterButton.onClick.AddListener(OnGoToRegisterClicked);
         if (goToLoginButton)    goToLoginButton.onClick.AddListener(OnGoToLoginClicked);
 
-        // ── Buttons luôn bật — không disable trước khi Firebase ready ────────
         SetButtonsInteractable(true);
+
+        // ── Cursor ────────────────────────────────────────────────────────────
+        FixCaret(loginEmailInput);
+        FixCaret(loginPasswordInput);
+        FixCaret(registerNameInput);
+        FixCaret(registerEmailInput);
+        FixCaret(registerPasswordInput);
+        FixCaret(registerConfirmPasswordInput);
+
+        // ── Tab / Enter navigation ────────────────────────────────────────────
+        // Login chain
+        BindTabField(loginEmailInput,    () => FocusField(loginPasswordInput));
+        BindTabField(loginPasswordInput, () => OnLoginButtonClicked());
+
+        // Register chain
+        BindTabField(registerNameInput,            () => FocusField(registerEmailInput));
+        BindTabField(registerEmailInput,           () => FocusField(registerPasswordInput));
+        BindTabField(registerPasswordInput,        () => FocusField(registerConfirmPasswordInput));
+        BindTabField(registerConfirmPasswordInput, () => OnRegisterButtonClicked());
     }
 
     private void Start()
@@ -63,20 +79,33 @@ public class AuthUIManager : MonoBehaviour
         ShowLoginPanel();
         HideError(loginErrorText);
         HideError(registerErrorText);
-
-        // Bind events Firebase qua Coroutine, không dùng Update
         StartCoroutine(BindAuthEvents());
+    }
+
+    // Bắt phím Tab trên laptop
+    // TMP_InputField không xử lý Tab nên phải bắt thủ công ở Update
+    private void Update()
+    {
+        if (_tabFocused == null) return;
+        if (!Input.GetKeyDown(KeyCode.Tab)) return;
+        // Gọi onSubmit listener đã gán — cùng logic với Enter
+        _tabFocused.onSubmit.Invoke(_tabFocused.text);
     }
 
     private void OnDestroy()
     {
-        // Gỡ listener code
         if (loginButton)        loginButton.onClick.RemoveListener(OnLoginButtonClicked);
         if (registerButton)     registerButton.onClick.RemoveListener(OnRegisterButtonClicked);
         if (goToRegisterButton) goToRegisterButton.onClick.RemoveListener(OnGoToRegisterClicked);
         if (goToLoginButton)    goToLoginButton.onClick.RemoveListener(OnGoToLoginClicked);
 
-        // Gỡ event AuthManager
+        UnbindTabField(loginEmailInput);
+        UnbindTabField(loginPasswordInput);
+        UnbindTabField(registerNameInput);
+        UnbindTabField(registerEmailInput);
+        UnbindTabField(registerPasswordInput);
+        UnbindTabField(registerConfirmPasswordInput);
+
         if (AuthManager.Instance == null) return;
         AuthManager.Instance.OnLoginSuccess -= HandleLoginSuccess;
         AuthManager.Instance.OnAuthError    -= HandleAuthError;
@@ -84,16 +113,45 @@ public class AuthUIManager : MonoBehaviour
     }
 
     // =========================================================================
-    // BIND EVENTS — Coroutine thay Update, không poll mỗi frame
+    // TAB / ENTER HELPERS
+    // =========================================================================
+
+    // Gán navigation cho 1 field:
+    //   lineType  = SingleLine → Enter sinh onSubmit thay vì xuống dòng
+    //   onSubmit  → gọi onNext (focus field kế hoặc Submit)
+    //   onSelect  → lưu vào _tabFocused để Update() bắt Tab
+    private void BindTabField(TMP_InputField field, System.Action onNext)
+    {
+        if (field == null) return;
+        field.lineType = TMP_InputField.LineType.SingleLine;
+        field.onSubmit.AddListener(_ => onNext());
+        field.onSelect.AddListener(_ => _tabFocused = field);
+        field.onDeselect.AddListener(_ => { if (_tabFocused == field) _tabFocused = null; });
+    }
+
+    private void UnbindTabField(TMP_InputField field)
+    {
+        if (field == null) return;
+        field.onSubmit.RemoveAllListeners();
+        field.onSelect.RemoveAllListeners();
+        field.onDeselect.RemoveAllListeners();
+    }
+
+    private void FocusField(TMP_InputField field)
+    {
+        if (field == null) return;
+        field.Select();
+        field.ActivateInputField();
+    }
+
+    // =========================================================================
+    // BIND EVENTS (Firebase)
     // =========================================================================
 
     private IEnumerator BindAuthEvents()
     {
-        // Chờ AuthManager tồn tại
         while (AuthManager.Instance == null)
             yield return null;
-
-        // Chờ Firebase init xong
         while (!AuthManager.Instance.IsInitialized)
             yield return null;
 
@@ -111,20 +169,17 @@ public class AuthUIManager : MonoBehaviour
     public void OnLoginButtonClicked()
     {
         if (!IsAuthReady()) return;
-
         HideError(loginErrorText);
         SetLoading(true);
 
         string email    = loginEmailInput    != null ? loginEmailInput.text.Trim() : "";
         string password = loginPasswordInput != null ? loginPasswordInput.text     : "";
-
         AuthManager.Instance.Login(email, password);
     }
 
     public void OnRegisterButtonClicked()
     {
         if (!IsAuthReady()) return;
-
         HideError(registerErrorText);
 
         string pass    = registerPasswordInput        != null ? registerPasswordInput.text        : "";
@@ -137,10 +192,8 @@ public class AuthUIManager : MonoBehaviour
         }
 
         SetLoading(true);
-
         string email = registerEmailInput != null ? registerEmailInput.text.Trim() : "";
         string name  = registerNameInput  != null ? registerNameInput.text.Trim()  : "";
-
         AuthManager.Instance.Register(email, pass, name);
     }
 
@@ -157,11 +210,7 @@ public class AuthUIManager : MonoBehaviour
     // EVENT HANDLERS
     // =========================================================================
 
-    private void HandleLoginSuccess(UserData d)
-    {
-        SetLoading(false);
-        // BedroomManager lo việc ẩn AuthCanvas và hiện Bedroom
-    }
+    private void HandleLoginSuccess(UserData d) { SetLoading(false); }
 
     private void HandleAuthError(string msg)
     {
@@ -218,6 +267,15 @@ public class AuthUIManager : MonoBehaviour
             return false;
         }
         return true;
+    }
+
+    private void FixCaret(TMP_InputField field)
+    {
+        if (field == null) return;
+        field.customCaretColor = true;
+        field.caretColor       = new Color(0.1f, 0.1f, 0.1f, 1f);
+        field.caretWidth       = 2;
+        field.caretBlinkRate   = 0.85f;
     }
 
     private void SetButtonsInteractable(bool on)

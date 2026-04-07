@@ -58,9 +58,8 @@ public class RewardManager : MonoBehaviour
 
     // ── Công thức tính thưởng gameplay ────────────────────────────────────────
     [Header("Cong Thuc Thuong Gameplay")]
-    [SerializeField] private int coinsPerCorrect = 10;
-    [SerializeField] private int xpPerCorrect    = 15;
-
+    [SerializeField] private int fixedCoins = 50;
+    [SerializeField] private int fixedXp    = 120;
     // ── Animation ─────────────────────────────────────────────────────────────
     [Header("Animation")]
     [SerializeField] private float animDuration = 0.4f;
@@ -108,8 +107,8 @@ public class RewardManager : MonoBehaviour
         _lastResult = result;
 
         // ── 1. Tính phần thưởng gameplay ──────────────────────────────────────
-        int coinsEarned = result.correct * coinsPerCorrect;
-        int xpEarned    = result.correct * xpPerCorrect;
+        int coinsEarned = fixedCoins;
+        int xpEarned    = fixedXp;
 
         // ── 2. Cập nhật UserData (AddXp trả về số level tăng) ─────────────────
         UserData user = AuthManager.Instance?.CurrentUserData;
