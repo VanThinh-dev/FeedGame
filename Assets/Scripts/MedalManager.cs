@@ -2,10 +2,21 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using Firebase.Database;
+using Firebase.Extensions;
 
 // =============================================================================
-// MedalManager.cs — v3
-// Tabbar: Dong / Bac / Vang — mỗi tab hiện đúng số ảnh
+// MedalManager.cs — v4
+//
+// FIX so với v3:
+//   • AwardMedal() KHÔNG tự cộng ud.bronzeMedals/silverMedals/goldMedals nữa.
+//     Việc cộng data là trách nhiệm của caller (RewardManager).
+//     AwardMedal() chỉ đọc giá trị hiện tại trong UserData rồi lưu Firebase.
+//
+//   • Lý do: RewardManager đã cộng user.bronzeMedals trước khi gọi AwardMedal()
+//     → nếu AwardMedal() cộng thêm lần nữa thì mỗi medal bị nhân đôi.
+//
+//   • Đổi tên thành SaveMedalToFirebase() cho rõ nghĩa, giữ AwardMedal() làm
+//     wrapper public để không phải sửa các caller khác.
 // =============================================================================
 
 public class MedalManager : MonoBehaviour
@@ -46,6 +57,8 @@ public class MedalManager : MonoBehaviour
     [SerializeField] private float iconSize = 80f;
 
     // =========================================================================
+    // LIFECYCLE
+    // =========================================================================
 
     private void Awake()
     {
@@ -56,9 +69,9 @@ public class MedalManager : MonoBehaviour
 
     private void Start()
     {
-        if (tabBronze != null) tabBronze.onClick.AddListener(() => SwitchTab(MedalType.Bronze));
-        if (tabSilver != null) tabSilver.onClick.AddListener(() => SwitchTab(MedalType.Silver));
-        if (tabGold   != null) tabGold  .onClick.AddListener(() => SwitchTab(MedalType.Gold));
+        if (tabBronze   != null) tabBronze  .onClick.AddListener(() => SwitchTab(MedalType.Bronze));
+        if (tabSilver   != null) tabSilver  .onClick.AddListener(() => SwitchTab(MedalType.Silver));
+        if (tabGold     != null) tabGold    .onClick.AddListener(() => SwitchTab(MedalType.Gold));
         if (closeButton != null) closeButton.onClick.AddListener(CloseMedalCanvas);
     }
 
@@ -70,7 +83,7 @@ public class MedalManager : MonoBehaviour
     {
         if (medalCanvas == null) { Debug.LogError("[MedalManager] Chua gan medalCanvas!"); return; }
         medalCanvas.SetActive(true);
-        SwitchTab(MedalType.Bronze); // mặc định mở tab Đồng
+        SwitchTab(MedalType.Bronze);
     }
 
     public void CloseMedalCanvas()
@@ -84,19 +97,16 @@ public class MedalManager : MonoBehaviour
 
     private void SwitchTab(MedalType tab)
     {
-        // Ẩn tất cả panel
         if (bronzePanel != null) bronzePanel.SetActive(false);
         if (silverPanel != null) silverPanel.SetActive(false);
         if (goldPanel   != null) goldPanel  .SetActive(false);
 
-        // Cập nhật màu tab
         SetTabColor(tabBronze, tab == MedalType.Bronze, bronzeActiveColor);
         SetTabColor(tabSilver, tab == MedalType.Silver, silverActiveColor);
         SetTabColor(tabGold,   tab == MedalType.Gold,   goldActiveColor);
 
         var ud = AuthManager.Instance?.CurrentUserData;
 
-        // Hiện panel đúng và fill ảnh
         switch (tab)
         {
             case MedalType.Bronze:
@@ -122,7 +132,7 @@ public class MedalManager : MonoBehaviour
     }
 
     // =========================================================================
-    // SPAWN ẢNH
+    // SPAWN ẢNH MEDAL
     // =========================================================================
 
     private void SpawnIcons(Transform container, Sprite sprite, int count)
@@ -134,10 +144,10 @@ public class MedalManager : MonoBehaviour
 
         for (int i = 0; i < count; i++)
         {
-            var go = new GameObject("MedalIcon");
+            var go            = new GameObject("MedalIcon");
             go.transform.SetParent(container, false);
-            var rt       = go.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(iconSize, iconSize);
+            var rt            = go.AddComponent<RectTransform>();
+            rt.sizeDelta      = new Vector2(iconSize, iconSize);
             var img           = go.AddComponent<Image>();
             img.sprite        = sprite;
             img.preserveAspect = true;
@@ -146,47 +156,64 @@ public class MedalManager : MonoBehaviour
 
     // =========================================================================
     // TRAO HUY CHƯƠNG
+    //
+    // QUAN TRỌNG: Hàm này KHÔNG cộng vào UserData.
+    // Caller (RewardManager) phải tự cộng user.bronzeMedals/silverMedals/goldMedals
+    // TRƯỚC khi gọi AwardMedal(). Hàm này chỉ đọc giá trị hiện tại rồi lưu Firebase.
+    //
+    // Ví dụ đúng:
+    //   user.bronzeMedals += 1;
+    //   MedalManager.Instance.AwardMedal(MedalType.Bronze);
     // =========================================================================
 
     public void AwardBronzeMedal() => AwardMedal(MedalType.Bronze);
 
     public void AwardMedal(MedalType type)
-{
-    var ud = AuthManager.Instance?.CurrentUserData;
-    if (ud == null) return;
-
-    string uid = AuthManager.Instance.CurrentUser?.UserId;
-    if (string.IsNullOrEmpty(uid)) return;
-
-    string field;
-
-    switch (type)
     {
-        case MedalType.Gold:
-            ud.goldMedals++;
-            field = "medals/gold";
-            break;
+        var ud = AuthManager.Instance?.CurrentUserData;
+        if (ud == null)
+        {
+            Debug.LogWarning("[MedalManager] AwardMedal: CurrentUserData null.");
+            return;
+        }
 
-        case MedalType.Silver:
-            ud.silverMedals++;
-            field = "medals/silver";
-            break;
+        string uid = AuthManager.Instance.CurrentUser?.UserId;
+        if (string.IsNullOrEmpty(uid))
+        {
+            Debug.LogWarning("[MedalManager] AwardMedal: uid null.");
+            return;
+        }
 
-        default:
-            ud.bronzeMedals++;
-            field = "medals/bronze";
-            break;
+        // ── Chỉ đọc giá trị, KHÔNG cộng thêm ────────────────────────────────
+        string field;
+        int    currentCount;
+
+        switch (type)
+        {
+            case MedalType.Gold:
+                field        = "medals/gold";
+                currentCount = ud.goldMedals;
+                break;
+            case MedalType.Silver:
+                field        = "medals/silver";
+                currentCount = ud.silverMedals;
+                break;
+            default: // Bronze
+                field        = "medals/bronze";
+                currentCount = ud.bronzeMedals;
+                break;
+        }
+
+        // ── Lưu lên Firebase ─────────────────────────────────────────────────
+        FirebaseDatabase.DefaultInstance
+            .GetReference($"users/{uid}/{field}")
+            .SetValueAsync(currentCount)
+            .ContinueWithOnMainThread(task =>
+            {
+                if (task.IsCompletedSuccessfully)
+                    Debug.Log($"[MedalManager] Luu Firebase OK: {field} = {currentCount}");
+                else
+                    Debug.LogError($"[MedalManager] Luu Firebase loi: {field} | {task.Exception}");
+            });
     }
-
-    int newCount = type switch
-    {
-        MedalType.Gold => ud.goldMedals,
-        MedalType.Silver => ud.silverMedals,
-        _ => ud.bronzeMedals
-    };
-
-    FirebaseDatabase.DefaultInstance
-        .GetReference($"users/{uid}/{field}")
-        .SetValueAsync(newCount);
- }
 }

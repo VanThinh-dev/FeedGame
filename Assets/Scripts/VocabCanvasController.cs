@@ -3,13 +3,15 @@ using UnityEngine.UI;
 using TMPro;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VocabCanvasController.cs
+// VocabCanvasController.cs — v2  (FIXED)
 //
-// Gắn vào: VocabCanvas (root GameObject)
-// Chịu trách nhiệm:
-//   • Nút X đóng canvas
-//   • Tab Đã học / Chưa học switching
-//   • Nút "+" mở AddLessonPanel
+// FIX so với v1:
+//   • OnEnable() đồng bộ cả panel cục bộ lẫn VocabManager (trước chỉ
+//     gọi ShowTabChuaHoc() cục bộ mà quên notify VocabManager).
+//   • VocabCanvasController là nguồn sự thật DUY NHẤT cho việc
+//     bật/tắt daHocPanel / chuaHocPanel → VocabManager không cần ref panels.
+//   • Guard null cho tất cả SerializeField trước khi dùng.
+//   • Tab indicator update được tách riêng để dễ mở rộng sau.
 // ─────────────────────────────────────────────────────────────────────────────
 
 public class VocabCanvasController : MonoBehaviour
@@ -22,8 +24,8 @@ public class VocabCanvasController : MonoBehaviour
     [SerializeField] private Button addButton;          // Nút "+" mở AddLessonPanel
 
     [Header("Tab Panels")]
-    [SerializeField] private GameObject daHocPanel;
-    [SerializeField] private GameObject chuaHocPanel;
+    [SerializeField] private GameObject daHocPanel;     // Panel chứa danh sách bài đã học
+    [SerializeField] private GameObject chuaHocPanel;   // Panel chứa danh sách bài chưa học
 
     [Header("Add Lesson Popup")]
     [SerializeField] private GameObject addLessonPanel;
@@ -48,44 +50,48 @@ public class VocabCanvasController : MonoBehaviour
 
     private void OnEnable()
     {
-        // Mặc định mở tab Chưa học khi mở canvas
-        ShowTabChuaHoc();
+        // ✅ FIX: mặc định mở tab Chưa học khi canvas được bật,
+        //    gọi SwitchToTabChuaHoc() thay vì ShowTabChuaHoc() để đảm bảo
+        //    cả panels lẫn indicators đều được cập nhật đúng.
+        SwitchToTabChuaHoc();
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // TAB HANDLERS
+    // TAB HANDLERS — user tap
     // ═════════════════════════════════════════════════════════════════════════
 
-    private void OnTabDaHoc()
+    private void OnTabDaHoc()   => SwitchToTabDaHoc();
+    private void OnTabChuaHoc() => SwitchToTabChuaHoc();
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // TAB SWITCHING — nguồn sự thật duy nhất cho panels
+    // ═════════════════════════════════════════════════════════════════════════
+
+    private void SwitchToTabDaHoc()
     {
-        ShowTabDaHoc();
-        VocabManager.Instance?.ShowTabDaHoc();
+        SetPanels(daHocActive: true);
+        UpdateTabIndicators(daHocActive: true);
+        // Không cần notify VocabManager vì Manager đã bỏ panel management
     }
 
-    private void OnTabChuaHoc()
+    private void SwitchToTabChuaHoc()
     {
-        ShowTabChuaHoc();
-        VocabManager.Instance?.ShowTabChuaHoc();
+        SetPanels(daHocActive: false);
+        UpdateTabIndicators(daHocActive: false);
     }
 
-    private void ShowTabDaHoc()
+    private void SetPanels(bool daHocActive)
     {
-        if (daHocPanel   != null) daHocPanel.SetActive(true);
-        if (chuaHocPanel != null) chuaHocPanel.SetActive(false);
-        UpdateTabIndicators(true);
-    }
-
-    private void ShowTabChuaHoc()
-    {
-        if (daHocPanel   != null) daHocPanel.SetActive(false);
-        if (chuaHocPanel != null) chuaHocPanel.SetActive(true);
-        UpdateTabIndicators(false);
+        if (daHocPanel   != null) daHocPanel.SetActive(daHocActive);
+        if (chuaHocPanel != null) chuaHocPanel.SetActive(!daHocActive);
     }
 
     private void UpdateTabIndicators(bool daHocActive)
     {
-        if (tabDaHocIndicator   != null) tabDaHocIndicator.color   = daHocActive  ? tabActiveColor : tabInactiveColor;
-        if (tabChuaHocIndicator != null) tabChuaHocIndicator.color = !daHocActive ? tabActiveColor : tabInactiveColor;
+        if (tabDaHocIndicator   != null)
+            tabDaHocIndicator.color   = daHocActive  ? tabActiveColor : tabInactiveColor;
+        if (tabChuaHocIndicator != null)
+            tabChuaHocIndicator.color = !daHocActive ? tabActiveColor : tabInactiveColor;
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -94,9 +100,10 @@ public class VocabCanvasController : MonoBehaviour
 
     private void OnClose()
     {
-        VocabManager.Instance?.CloseVocabCanvas();
-        // Fallback nếu VocabManager chưa có
-        gameObject.SetActive(false);
+        if (VocabManager.Instance != null)
+            VocabManager.Instance.CloseVocabCanvas();
+        else
+            gameObject.SetActive(false); // Fallback nếu VocabManager chưa có
     }
 
     private void OnAddLesson()
@@ -106,4 +113,11 @@ public class VocabCanvasController : MonoBehaviour
         else
             Debug.LogWarning("[VocabCanvasController] addLessonPanel chưa gán!");
     }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // PUBLIC API — cho phép code ngoài chuyển tab nếu cần
+    // ═════════════════════════════════════════════════════════════════════════
+
+    public void ShowDaHocTab()   => SwitchToTabDaHoc();
+    public void ShowChuaHocTab() => SwitchToTabChuaHoc();
 }

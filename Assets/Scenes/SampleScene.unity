@@ -12278,8 +12278,12 @@ MonoBehaviour:
   levelUpMedalIcon: {fileID: 1810054147}
   levelUpBronzeSprite: {fileID: -8253071003166179409, guid: f8a7b0e87b0fbe04782d5694ee94c535, type: 3}
   confirmButton: {fileID: 851593538}
-  fixedCoins: 50
-  fixedXp: 50
+  gameplayCoins: 50
+  gameplayXp: 50
+  awardBronzeMedalOnGameplay: 1
+  gameplayBronzeCount: 1
+  levelUpCoinBonus: 10
+  levelUpBronzePerLevel: 1
   animDuration: 0.4
 --- !u!4 &642153793
 Transform:

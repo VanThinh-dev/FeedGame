@@ -190,7 +190,7 @@ public class CatAnimatorSetup : Editor
             AssetDatabase.DeleteAsset(savePath);
 
         AssetDatabase.CreateAsset(clip, savePath);
-        Debug.Log($"[CatAnimatorSetup] ✓ Tạo clip: {savePath} ({sprites.Count} frames, loop={loop})");
+        Debug.Log($"[CatAnimatorSetup]  Tạo clip: {savePath} ({sprites.Count} frames, loop={loop})");
 
         return AssetDatabase.LoadAssetAtPath<AnimationClip>(savePath);
     }

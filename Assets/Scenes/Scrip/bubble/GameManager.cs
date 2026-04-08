@@ -6,12 +6,16 @@ using UnityEngine.UI;
 using TMPro;
 
 // =============================================================================
-// GameManager.cs — v3 (PATCHED)
+// GameManager.cs — v4
+//
+// FIX so với v3:
+//   • OnSessionComplete() bị gọi nhiều lần vì nhiều coroutine DelayedReset
+//     chạy song song — tất cả thấy remainingWords.Count == 0 cùng lúc.
+//   • Thêm _sessionEnded guard: chỉ cho OnSessionComplete chạy 1 lần duy nhất.
+//   • StopAllCoroutines() trong OnSessionComplete để dọn sạch coroutine thừa.
+//   • Reset _sessionEnded trong StartGameWithVocab (mỗi ván mới).
 // =============================================================================
 
-// -----------------------------------------------------------------------------
-// Struct chứa kết quả một phiên chơi
-// -----------------------------------------------------------------------------
 [Serializable]
 public struct GameResult
 {
@@ -39,29 +43,28 @@ public class GameManager : MonoBehaviour
     private List<VocabWord> allWords       = new List<VocabWord>();
     private List<VocabWord> remainingWords = new List<VocabWord>();
     private VocabWord currentTarget;
-    private bool   gameReady         = false;
+    private bool gameReady = false;
 
-    private string _currentLessonId  = "";
-
-    // =========================== PATCH START ===========================
-    // Field lesson name để RewardManager đọc
+    private string _currentLessonId   = "";
     private string _currentLessonName = "";
 
-    // Public property cho RewardManager đọc
     public string CurrentLessonId   => _currentLessonId;
     public string CurrentLessonName => _currentLessonName;
-    // =========================== PATCH END =============================
 
+    // ── Theo dõi kết quả ─────────────────────────────────────────────────────
+    private int   _correctCount  = 0;
+    private float _gameStartTime = 0f;
 
-    // ── Theo dõi kết quả ───────────────────────────────────────────────
-    private int   _correctCount   = 0;
-    private float _gameStartTime  = 0f;
+    // ── GUARD: chặn OnSessionComplete chạy nhiều lần ─────────────────────────
+    // Nguyên nhân: nhiều DelayedReset coroutine chạy song song, tất cả thấy
+    // remainingWords.Count == 0 cùng lúc → OnSessionComplete bị gọi N lần.
+    private bool _sessionEnded = false;
 
-    // ── Components ─────────────────────────────────────────────────────
+    // ── Components ────────────────────────────────────────────────────────────
     private TargetTextAnimator targetAnimator;
     private ConfettiEffect     confettiEffect;
 
-    // ── Exit Button ────────────────────────────────────────────────────
+    // ── Exit Button ───────────────────────────────────────────────────────────
     private GameObject exitButtonGO;
 
     // =========================================================================
@@ -107,7 +110,6 @@ public class GameManager : MonoBehaviour
 
         canvasGO.AddComponent<CanvasScaler>().uiScaleMode =
             CanvasScaler.ScaleMode.ScaleWithScreenSize;
-
         canvasGO.AddComponent<GraphicRaycaster>();
 
         exitButtonGO = new GameObject("ExitButton", typeof(RectTransform));
@@ -120,50 +122,48 @@ public class GameManager : MonoBehaviour
         rt.anchoredPosition = new Vector2(-16f, -16f);
         rt.sizeDelta        = new Vector2(52f, 52f);
 
-        var img        = exitButtonGO.AddComponent<Image>();
-        img.color      = new Color(0.95f, 0.35f, 0.35f, 0.92f);
-        img.sprite     = CreateCircleSprite();
-        img.type       = Image.Type.Simple;
+        var img            = exitButtonGO.AddComponent<Image>();
+        img.color          = new Color(0.95f, 0.35f, 0.35f, 0.92f);
+        img.sprite         = CreateCircleSprite();
+        img.type           = Image.Type.Simple;
         img.preserveAspect = true;
 
         var shadowGO = new GameObject("Shadow", typeof(RectTransform));
         shadowGO.transform.SetParent(canvasGO.transform, false);
         shadowGO.transform.SetSiblingIndex(0);
 
-        var shadowRT = shadowGO.GetComponent<RectTransform>();
+        var shadowRT              = shadowGO.GetComponent<RectTransform>();
         shadowRT.anchorMin        = rt.anchorMin;
         shadowRT.anchorMax        = rt.anchorMax;
         shadowRT.pivot            = rt.pivot;
         shadowRT.anchoredPosition = new Vector2(-14f, -18f);
         shadowRT.sizeDelta        = new Vector2(52f, 52f);
 
-        var shadowImg = shadowGO.AddComponent<Image>();
-        shadowImg.color  = new Color(0f,0f,0f,0.18f);
-        shadowImg.sprite = img.sprite;
+        var shadowImg        = shadowGO.AddComponent<Image>();
+        shadowImg.color      = new Color(0f, 0f, 0f, 0.18f);
+        shadowImg.sprite     = img.sprite;
 
         var iconGO = new GameObject("Icon", typeof(RectTransform));
         iconGO.transform.SetParent(exitButtonGO.transform, false);
 
-        var iconRT = iconGO.GetComponent<RectTransform>();
+        var iconRT       = iconGO.GetComponent<RectTransform>();
         iconRT.anchorMin = Vector2.zero;
         iconRT.anchorMax = Vector2.one;
         iconRT.offsetMin = iconRT.offsetMax = Vector2.zero;
 
-        var iconTMP = iconGO.AddComponent<TextMeshProUGUI>();
-        iconTMP.text = "X";
-        iconTMP.fontSize = 22;
+        var iconTMP       = iconGO.AddComponent<TextMeshProUGUI>();
+        iconTMP.text      = "X";
+        iconTMP.fontSize  = 22;
         iconTMP.fontStyle = FontStyles.Bold;
-        iconTMP.color = Color.white;
+        iconTMP.color     = Color.white;
         iconTMP.alignment = TextAlignmentOptions.Center;
 
-        var btn = exitButtonGO.AddComponent<Button>();
-
+        var btn    = exitButtonGO.AddComponent<Button>();
         var colors = btn.colors;
-        colors.normalColor = Color.white;
-        colors.highlightedColor = new Color(1f,0.8f,0.8f);
-        colors.pressedColor = new Color(0.7f,0.2f,0.2f);
-
-        btn.colors = colors;
+        colors.normalColor      = Color.white;
+        colors.highlightedColor = new Color(1f, 0.8f, 0.8f);
+        colors.pressedColor     = new Color(0.7f, 0.2f, 0.2f);
+        btn.colors     = colors;
         btn.transition = Selectable.Transition.ColorTint;
         btn.onClick.AddListener(ExitGameplay);
 
@@ -173,28 +173,25 @@ public class GameManager : MonoBehaviour
 
     private static Sprite CreateCircleSprite()
     {
-        int size = 128;
-        var tex = new Texture2D(size,size,TextureFormat.RGBA32,false);
-        var pixels = new Color[size*size];
+        int   size    = 128;
+        var   tex     = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        var   pixels  = new Color[size * size];
+        float center  = size / 2f;
+        float radius  = size / 2f - 1;
 
-        float center = size/2f;
-        float radius = size/2f-1;
-
-        for(int y=0;y<size;y++)
-        for(int x=0;x<size;x++)
+        for (int y = 0; y < size; y++)
+        for (int x = 0; x < size; x++)
         {
-            float dx=x-center;
-            float dy=y-center;
-            float dist=Mathf.Sqrt(dx*dx+dy*dy);
-            float alpha=Mathf.Clamp01(radius-dist+0.5f);
-
-            pixels[y*size+x]=new Color(1,1,1,alpha);
+            float dx    = x - center;
+            float dy    = y - center;
+            float dist  = Mathf.Sqrt(dx * dx + dy * dy);
+            float alpha = Mathf.Clamp01(radius - dist + 0.5f);
+            pixels[y * size + x] = new Color(1, 1, 1, alpha);
         }
 
         tex.SetPixels(pixels);
         tex.Apply();
-
-        return Sprite.Create(tex,new Rect(0,0,size,size),new Vector2(0.5f,0.5f),size);
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
     }
 
     // =========================================================================
@@ -203,27 +200,26 @@ public class GameManager : MonoBehaviour
 
     public void StartGameWithVocab(List<VocabWord> words)
     {
-        if(words==null||words.Count==0)
+        if (words == null || words.Count == 0)
         {
             Debug.LogWarning("[GameManager] StartGameWithVocab: danh sach rong.");
             return;
         }
 
-        // =========================== PATCH START ===========================
         _currentLessonId   = words[0].lessonId;
         _currentLessonName = words[0].lessonName ?? words[0].lessonId;
-        // =========================== PATCH END =============================
 
         allWords  = words;
         gameReady = true;
 
-        _correctCount  = 0;
+        // Reset guard cho ván mới
+        _sessionEnded = false;
+        _correctCount = 0;
         _gameStartTime = Time.time;
 
         StopAllCoroutines();
 
-        if(exitButtonGO!=null)
-            exitButtonGO.SetActive(true);
+        if (exitButtonGO != null) exitButtonGO.SetActive(true);
 
         PlayBgMusic();
         StartNewRound();
@@ -231,49 +227,50 @@ public class GameManager : MonoBehaviour
 
     public void ExitGameplay()
     {
-        gameReady=false;
+        gameReady     = false;
+        _sessionEnded = true; // ngăn OnSessionComplete trigger sau khi exit
 
         StopAllCoroutines();
         StopBgMusic();
 
         BubbleManager.Instance?.ClearAllBubbles();
 
-        if(targetText!=null)
-            targetText.text="";
-
-        if(exitButtonGO!=null)
-            exitButtonGO.SetActive(false);
+        if (targetText != null) targetText.text = "";
+        if (exitButtonGO != null) exitButtonGO.SetActive(false);
 
         BedroomManager.Instance?.ExitGameplay();
     }
 
     public void StartNewRound()
     {
-        if(!gameReady) return;
+        if (!gameReady) return;
 
-        remainingWords=new List<VocabWord>(allWords);
+        remainingWords = new List<VocabWord>(allWords);
         ShuffleList(remainingWords);
 
         SetNextTarget(true);
     }
 
-    private void SetNextTarget(bool spawnAfter=false)
+    private void SetNextTarget(bool spawnAfter = false)
     {
-        if(remainingWords.Count==0)
+        // Không làm gì nếu session đã kết thúc hoặc game chưa sẵn sàng
+        if (!gameReady || _sessionEnded) return;
+
+        if (remainingWords.Count == 0)
         {
             OnSessionComplete();
             return;
         }
 
-        currentTarget=remainingWords[0];
+        currentTarget = remainingWords[0];
         remainingWords.RemoveAt(0);
 
-        if(targetText!=null)
-            targetText.text=currentTarget.vietnamese;
+        if (targetText != null)
+            targetText.text = currentTarget.vietnamese;
 
         targetAnimator?.PlayNewTarget();
 
-        if(spawnAfter)
+        if (spawnAfter)
         {
             BubbleManager.Instance.ClearAllBubbles();
             BubbleManager.Instance.SpawnGrid();
@@ -285,18 +282,17 @@ public class GameManager : MonoBehaviour
 
     public List<string> GetAllEnglishWords()
     {
-        var list=new List<string>();
-        foreach(var w in allWords)
+        var list = new List<string>();
+        foreach (var w in allWords)
             list.Add(w.english);
-
         return list;
     }
 
     public void OnBubbleClicked(BubbleController bubble)
     {
-        if(currentTarget==null) return;
+        if (currentTarget == null) return;
 
-        if(bubble.GetWord()==currentTarget.english)
+        if (bubble.GetWord() == currentTarget.english)
         {
             _correctCount++;
             bubble.Pop();
@@ -311,61 +307,81 @@ public class GameManager : MonoBehaviour
     private IEnumerator DelayedReset(float delay)
     {
         yield return new WaitForSeconds(delay);
-        SetNextTarget(true);
+        SetNextTarget(true); // SetNextTarget tự kiểm tra _sessionEnded trước khi làm gì
     }
+
+    // =========================================================================
+    // SESSION COMPLETE
+    // =========================================================================
 
     private void OnSessionComplete()
     {
-        if(targetText!=null)
-            targetText.text="Bạn Đã Hoàn Thành !";
+        // ── GUARD: chỉ chạy 1 lần duy nhất ───────────────────────────────────
+        if (_sessionEnded)
+        {
+            Debug.LogWarning("[GameManager] OnSessionComplete goi lan 2+ — BO QUA.");
+            return;
+        }
+        _sessionEnded = true;
+
+        // Dừng tất cả coroutine để không có DelayedReset nào gọi thêm
+        StopAllCoroutines();
+
+        gameReady = false;
+
+        if (targetText != null)
+            targetText.text = "Bạn Đã Hoàn Thành !";
 
         confettiEffect?.Play();
 
         BubbleManager.Instance.ClearAllBubbles();
         StopBgMusic();
 
-        if(exitButtonGO!=null)
-            exitButtonGO.SetActive(false);
+        if (exitButtonGO != null) exitButtonGO.SetActive(false);
 
-        if(!string.IsNullOrEmpty(_currentLessonId))
+        if (!string.IsNullOrEmpty(_currentLessonId))
             VocabManager.Instance?.MarkLessonCompleted(_currentLessonId);
 
-        gameReady=false;
-
-        var result=new GameResult
+        var result = new GameResult
         {
-            correct=_correctCount,
-            total=allWords.Count,
-            timeTaken=Time.time-_gameStartTime
+            correct   = _correctCount,
+            total     = allWords.Count,
+            timeTaken = Time.time - _gameStartTime
         };
 
+        Debug.Log($"[GameManager] Session complete: {result.correct}/{result.total} dung | {result.timeTaken:F1}s");
         OnGameCompleted?.Invoke(result);
     }
 
+    // =========================================================================
+    // AUDIO
+    // =========================================================================
+
     private void PlayBgMusic()
     {
-        if(bgMusic==null||musicSource==null||musicSource.isPlaying)
-            return;
-
-        musicSource.clip=bgMusic;
+        if (bgMusic == null || musicSource == null || musicSource.isPlaying) return;
+        musicSource.clip = bgMusic;
         musicSource.Play();
     }
 
     private void StopBgMusic()
     {
-        if(musicSource!=null&&musicSource.isPlaying)
+        if (musicSource != null && musicSource.isPlaying)
             musicSource.Stop();
     }
 
-    public void ForceStopMusic()
-        => StopBgMusic();
+    public void ForceStopMusic() => StopBgMusic();
+
+    // =========================================================================
+    // UTILITY
+    // =========================================================================
 
     private void ShuffleList<T>(List<T> list)
     {
-        for(int i=list.Count-1;i>0;i--)
+        for (int i = list.Count - 1; i > 0; i--)
         {
-            int j=UnityEngine.Random.Range(0,i+1);
-            (list[i],list[j])=(list[j],list[i]);
+            int j = UnityEngine.Random.Range(0, i + 1);
+            (list[i], list[j]) = (list[j], list[i]);
         }
     }
 }

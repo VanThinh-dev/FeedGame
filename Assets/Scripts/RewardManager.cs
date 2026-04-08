@@ -5,15 +5,14 @@ using UnityEngine.UI;
 using TMPro;
 
 // =============================================================================
-// RewardManager.cs — v5
+// RewardManager.cs — v7
 //
-// Fix so với v4:
-//   • ShowRewardCanvas() được gọi TRƯỚC ShowLevelUpSection()
-//     → Khi canvas cha đang SetActive(false), gọi SetActive(true) trên con
-//       không có hiệu lực trong hierarchy — canvas phải active trước.
-//   • Bỏ emoji 🎉 trong title text (font LiberationSans không hỗ trợ Unicode emoji
-//     → gây warning spam và ký tự bị thay thế).
-//   • Thêm debug log để dễ trace nếu vẫn còn lỗi.
+// FIX so với v6:
+//   • HandleGameCompleted bị gọi 2+ lần trong 1 ván (GameManager bắn event
+//     mỗi lần SetNextTarget → OnSessionComplete → OnGameCompleted).
+//     Thêm _isProcessing guard để chỉ xử lý lần đầu tiên, bỏ qua các lần sau.
+//   • Unsubscribe trước khi Subscribe để tránh event handler tích lũy.
+//   • _isProcessing được reset trong OnConfirmClicked() để ván tiếp theo OK.
 // =============================================================================
 
 public class RewardManager : MonoBehaviour
@@ -22,50 +21,74 @@ public class RewardManager : MonoBehaviour
 
     // ── Canvas / Panel ────────────────────────────────────────────────────────
     [Header("Canvas & Panel")]
-    [SerializeField] private GameObject rewardCanvas;   // RewardCanvas gốc
-    [SerializeField] private GameObject rewardPanel;    // Panel con (scale animation)
+    [SerializeField] private GameObject rewardCanvas;
+    [SerializeField] private GameObject rewardPanel;
 
-    // ── Card Coin (phần thưởng gameplay) ─────────────────────────────────────
+    // ── Card Coin ─────────────────────────────────────────────────────────────
     [Header("Card Coin - Phan Thuong Gameplay")]
     [SerializeField] private Image    coinIcon;
-    [SerializeField] private TMP_Text coinAmountText;   // "+50"
+    [SerializeField] private TMP_Text coinAmountText;
 
     // ── Card XP ───────────────────────────────────────────────────────────────
     [Header("Card XP")]
     [SerializeField] private Image    xpIcon;
-    [SerializeField] private TMP_Text xpAmountText;     // "+120 XP"
+    [SerializeField] private TMP_Text xpAmountText;
 
-    // ── Card Medal (gameplay — luôn trao Bronze) ──────────────────────────────
+    // ── Card Medal ────────────────────────────────────────────────────────────
     [Header("Card Medal - Gameplay")]
     [SerializeField] private GameObject medalCard;
     [SerializeField] private Image      medalIcon;
     [SerializeField] private TMP_Text   medalTypeText;
     [SerializeField] public  Sprite     bronzeMedalSprite;
 
-    // ── Level-Up Section (hiện trên cùng RewardCanvas) ───────────────────────
-    [Header("Level-Up Section (SetActive false mac dinh)")]
-    [SerializeField] private GameObject levelUpSection;     // Container ẩn/hiện
-    [SerializeField] private TMP_Text   levelUpTitleText;   // "Chuc mung! Len Level X!"
-    [SerializeField] private TMP_Text   levelUpCoinText;    // "+10 Xu"
-    [SerializeField] private TMP_Text   levelUpMedalText;   // "+1 Huy Chuong Dong"
-    [SerializeField] private Image      levelUpCoinIcon;    // Sprite coin — kéo vào
-    [SerializeField] private Image      levelUpMedalIcon;   // Sprite medal — kéo vào
-    [SerializeField] public  Sprite     levelUpBronzeSprite;// Sprite huy chương đồng lên level
+    // ── Level-Up Section ─────────────────────────────────────────────────────
+    [Header("Level-Up Section")]
+    [SerializeField] private GameObject levelUpSection;
+    [SerializeField] private TMP_Text   levelUpTitleText;
+    [SerializeField] private TMP_Text   levelUpCoinText;
+    [SerializeField] private TMP_Text   levelUpMedalText;
+    [SerializeField] private Image      levelUpCoinIcon;
+    [SerializeField] private Image      levelUpMedalIcon;
+    [SerializeField] public  Sprite     levelUpBronzeSprite;
 
-    // ── Nút xác nhận ──────────────────────────────────────────────────────────
+    // ── Button ────────────────────────────────────────────────────────────────
     [Header("Button")]
     [SerializeField] private Button confirmButton;
 
-    // ── Công thức tính thưởng gameplay ────────────────────────────────────────
-    [Header("Cong Thuc Thuong Gameplay")]
-    [SerializeField] private int fixedCoins = 50;
-    [SerializeField] private int fixedXp    = 120;
-    // ── Animation ─────────────────────────────────────────────────────────────
+    // ── Reward Config ─────────────────────────────────────────────────────────
+    [Header("=== REWARD CONFIG ===")]
+
+    [Header("Gameplay Rewards")]
+    [Tooltip("Số coin thưởng sau mỗi ván chơi")]
+    [SerializeField] private int gameplayCoins = 50;
+
+    [Tooltip("Số XP thưởng sau mỗi ván chơi")]
+    [SerializeField] private int gameplayXp = 120;
+
+    [Tooltip("Có trao huy chương đồng sau mỗi ván chơi không?")]
+    [SerializeField] private bool awardBronzeMedalOnGameplay = true;
+
+    [Tooltip("Số huy chương đồng trao sau mỗi ván chơi (nếu bật)")]
+    [SerializeField] private int gameplayBronzeCount = 1;
+
+    [Header("Level-Up Rewards")]
+    [Tooltip("Coin thưởng mỗi lần lên level — phải khớp với UserData.LEVELUP_COIN_REWARD")]
+    [SerializeField] private int levelUpCoinBonus = 10;
+
+    [Tooltip("Số huy chương đồng trao mỗi lần lên level")]
+    [SerializeField] private int levelUpBronzePerLevel = 1;
+
     [Header("Animation")]
     [SerializeField] private float animDuration = 0.4f;
 
     // ── Internal ─────────────────────────────────────────────────────────────
     private GameResult _lastResult;
+
+    /// <summary>
+    /// Guard chống HandleGameCompleted chạy nhiều lần trong 1 ván.
+    /// Set true khi bắt đầu xử lý, reset false khi người dùng bấm Xác nhận.
+    /// </summary>
+    private bool _isProcessing = false;
 
     // =========================================================================
     // LIFECYCLE
@@ -88,7 +111,11 @@ public class RewardManager : MonoBehaviour
     {
         while (GameManager.Instance == null)
             yield return null;
+
+        // Unsubscribe trước để tránh đăng ký trùng
+        GameManager.Instance.OnGameCompleted -= HandleGameCompleted;
         GameManager.Instance.OnGameCompleted += HandleGameCompleted;
+
         Debug.Log("[RewardManager] Da dang ky OnGameCompleted.");
     }
 
@@ -104,13 +131,16 @@ public class RewardManager : MonoBehaviour
 
     private void HandleGameCompleted(GameResult result)
     {
+        // ── GUARD: chỉ xử lý 1 lần duy nhất mỗi ván ─────────────────────────
+        if (_isProcessing)
+        {
+            Debug.LogWarning("[RewardManager] HandleGameCompleted goi lan 2+ — BO QUA.");
+            return;
+        }
+        _isProcessing = true;
+
         _lastResult = result;
 
-        // ── 1. Tính phần thưởng gameplay ──────────────────────────────────────
-        int coinsEarned = fixedCoins;
-        int xpEarned    = fixedXp;
-
-        // ── 2. Cập nhật UserData (AddXp trả về số level tăng) ─────────────────
         UserData user = AuthManager.Instance?.CurrentUserData;
         if (user == null)
         {
@@ -119,43 +149,53 @@ public class RewardManager : MonoBehaviour
             return;
         }
 
-        user.coins += coinsEarned;
-        int levelsGained = user.AddXp(xpEarned);
-        // AddXp đã cộng LEVELUP_COIN_REWARD vào user.coins nếu lên level
+        // ── 1. Cộng phần thưởng gameplay vào UserData ─────────────────────────
+        user.coins += gameplayCoins;
+        int levelsGained = user.AddXp(gameplayXp);
+        // AddXp tự cộng LEVELUP_COIN_REWARD vào user.coins mỗi lần lên level
 
-        // ── 3. Cập nhật UI gameplay cards ─────────────────────────────────────
-        UpdateGameplayCards(coinsEarned, xpEarned);
-        ShowGameplayMedalCard();
+        // ── 2. Trao huy chương gameplay ───────────────────────────────────────
+        if (awardBronzeMedalOnGameplay && gameplayBronzeCount > 0)
+        {
+            user.bronzeMedals += gameplayBronzeCount;
+            AwardMedals(MedalType.Bronze, gameplayBronzeCount, "gameplay");
+        }
 
-        // ── 4. Lưu Firebase ───────────────────────────────────────────────────
-        SaveAllToFirebase(user, result.correct);
-
-        // ── 5. Refresh AvatarWidget ───────────────────────────────────────────
-        RefreshAvatarWidget(user);
-
-        // ── 6. Bật canvas TRƯỚC — quan trọng! ────────────────────────────────
-        // Canvas phải active trước khi gọi SetActive(true) trên LevelUpSection,
-        // vì khi GameObject cha đang inactive, SetActive(true) trên con không
-        // có hiệu lực trong hierarchy (activeInHierarchy vẫn = false).
-        ShowRewardCanvas();
-
-        // ── 7. Sau khi canvas đã active, mới toggle LevelUpSection ───────────
+        // ── 3. Trao huy chương lên level ──────────────────────────────────────
+        int levelUpBronzeTotal = 0;
         if (levelsGained > 0)
         {
-            user.bronzeMedals += levelsGained;
-            AwardLevelUpMedal(levelsGained);
-            ShowLevelUpSection(user.level, levelsGained);
-        }
-        else
-        {
-            if (levelUpSection != null) levelUpSection.SetActive(false);
+            levelUpBronzeTotal = levelUpBronzePerLevel * levelsGained;
+            user.bronzeMedals += levelUpBronzeTotal;
+            AwardMedals(MedalType.Bronze, levelUpBronzeTotal, "level-up");
         }
 
-        Debug.Log($"[RewardManager] Gameplay: +{coinsEarned} coins, +{xpEarned} XP | Level up: {levelsGained} lan");
+        // ── 4. Cập nhật UI cards ──────────────────────────────────────────────
+        UpdateGameplayCards(gameplayCoins, gameplayXp);
+        SetMedalCardVisible(awardBronzeMedalOnGameplay);
+
+        // ── 5. Lưu Firebase ───────────────────────────────────────────────────
+        SaveAllToFirebase(user, result.correct);
+
+        // ── 6. Refresh AvatarWidget ───────────────────────────────────────────
+        RefreshAvatarWidget(user);
+
+        // ── 7. Bật canvas TRƯỚC ───────────────────────────────────────────────
+        ShowRewardCanvas();
+
+        // ── 8. Toggle LevelUpSection ──────────────────────────────────────────
+        if (levelsGained > 0)
+            ShowLevelUpSection(user.level, levelsGained, levelUpBronzeTotal);
+        else
+            HideLevelUpSection();
+
+        Debug.Log($"[RewardManager] +{gameplayCoins} coins | +{gameplayXp} XP | " +
+                  $"+{(awardBronzeMedalOnGameplay ? gameplayBronzeCount : 0)} medal(gameplay) | " +
+                  $"Level up: {levelsGained} lan | +{levelUpBronzeTotal} medal(level-up)");
     }
 
     // =========================================================================
-    // CẬP NHẬT UI — GAMEPLAY CARDS
+    // UI — GAMEPLAY CARDS
     // =========================================================================
 
     private void UpdateGameplayCards(int coins, int xp)
@@ -164,61 +204,69 @@ public class RewardManager : MonoBehaviour
         if (xpAmountText   != null) xpAmountText.text   = $"+{xp} XP";
     }
 
-    private void ShowGameplayMedalCard()
+    private void SetMedalCardVisible(bool visible)
     {
-        if (medalCard     != null) medalCard.SetActive(true);
-        if (medalIcon     != null && bronzeMedalSprite != null)
+        if (medalCard == null) return;
+        medalCard.SetActive(visible);
+        if (!visible) return;
+
+        if (medalIcon != null && bronzeMedalSprite != null)
             medalIcon.sprite = bronzeMedalSprite;
         if (medalTypeText != null)
-            medalTypeText.text = "Huy Chương Đồng";
+            medalTypeText.text = gameplayBronzeCount > 1
+                ? $"x{gameplayBronzeCount} Huy Chương Đồng"
+                : "Huy Chương Đồng";
     }
 
     // =========================================================================
-    // LEVEL-UP SECTION
+    // UI — LEVEL-UP SECTION
     // =========================================================================
 
-    private void ShowLevelUpSection(int newLevel, int levelsGained)
-{
-    if (levelUpSection == null)
+    private void ShowLevelUpSection(int newLevel, int levelsGained, int bronzeAwarded)
     {
-        Debug.LogError("[RewardManager] levelUpSection CHUA DUOC GAN trong Inspector!");
-        return;
+        if (levelUpSection == null)
+        {
+            Debug.LogError("[RewardManager] levelUpSection CHUA DUOC GAN trong Inspector!");
+            return;
+        }
+
+        levelUpSection.SetActive(true);
+        levelUpSection.transform.SetAsLastSibling();
+
+        Debug.Log($"[RewardManager] LevelUpSection active | activeInHierarchy={levelUpSection.activeInHierarchy}");
+
+        if (levelUpTitleText != null)
+            levelUpTitleText.text = levelsGained > 1
+                ? $"Tuyet voi! Len Level {newLevel}! (+{levelsGained})"
+                : $"Chuc mung! Len Level {newLevel}!";
+
+        int totalCoinBonus = levelUpCoinBonus * levelsGained;
+        if (levelUpCoinText  != null) levelUpCoinText.text  = $"+{totalCoinBonus} Xu";
+        if (levelUpMedalText != null) levelUpMedalText.text = $"+{bronzeAwarded} Huy Chương Đồng";
+
+        if (levelUpMedalIcon != null && levelUpBronzeSprite != null)
+            levelUpMedalIcon.sprite = levelUpBronzeSprite;
     }
 
-    levelUpSection.SetActive(true);
-    
-    // ── FIX: Đưa lên top của render order để không bị che ─────────────────
-    levelUpSection.transform.SetAsLastSibling();
-
-    Debug.Log($"[RewardManager] LevelUpSection SetActive(true) | activeInHierarchy={levelUpSection.activeInHierarchy}");
-
-    if (levelUpTitleText != null)
-        levelUpTitleText.text = levelsGained > 1
-            ? $"Tuyet voi! Len Level {newLevel}! (+{levelsGained})"
-            : $"Chuc mung! Len Level {newLevel}!";
-
-    int totalCoinBonus = UserData.LEVELUP_COIN_REWARD * levelsGained;
-    if (levelUpCoinText  != null) levelUpCoinText.text  = $"+{totalCoinBonus} Xu";
-    if (levelUpMedalText != null) levelUpMedalText.text = $"+{levelsGained} Huy Chương Đồng";
-
-    if (levelUpMedalIcon != null && levelUpBronzeSprite != null)
-        levelUpMedalIcon.sprite = levelUpBronzeSprite;
-}
+    private void HideLevelUpSection()
+    {
+        if (levelUpSection != null) levelUpSection.SetActive(false);
+    }
 
     // =========================================================================
-    // TRAO HUY CHƯƠNG KHI LÊN LEVEL
+    // TRAO HUY CHƯƠNG
     // =========================================================================
 
-    private void AwardLevelUpMedal(int count)
+    private void AwardMedals(MedalType type, int count, string source)
     {
         if (MedalManager.Instance == null)
         {
-            Debug.LogWarning("[RewardManager] MedalManager.Instance null — bo qua trao medal len level.");
+            Debug.LogWarning($"[RewardManager] MedalManager null — bo qua trao medal ({source}).");
             return;
         }
         for (int i = 0; i < count; i++)
-            MedalManager.Instance.AwardMedal(MedalType.Bronze);
-        Debug.Log($"[RewardManager] Trao {count} Huy Chương Đồng (len level).");
+            MedalManager.Instance.AwardMedal(type);
+        Debug.Log($"[RewardManager] Trao {count}x {type} ({source}).");
     }
 
     // =========================================================================
@@ -246,7 +294,7 @@ public class RewardManager : MonoBehaviour
     }
 
     // =========================================================================
-    // ANIMATION — scale panel từ 0 lên 1, sau đó mới apply LevelUpSection
+    // SHOW CANVAS + ANIMATION
     // =========================================================================
 
     private void ShowRewardCanvas()
@@ -257,9 +305,7 @@ public class RewardManager : MonoBehaviour
             return;
         }
 
-        // Đảm bảo LevelUpSection ẩn trước khi canvas hiện (reset trạng thái)
-        if (levelUpSection != null) levelUpSection.SetActive(false);
-
+        HideLevelUpSection();
         rewardCanvas.SetActive(true);
 
         if (rewardPanel != null)
@@ -274,7 +320,7 @@ public class RewardManager : MonoBehaviour
         {
             elapsed += Time.deltaTime;
             float t     = Mathf.Clamp01(elapsed / animDuration);
-            float eased = 1f - Mathf.Pow(1f - t, 3f); // ease-out cubic
+            float eased = 1f - Mathf.Pow(1f - t, 3f);
             target.localScale = Vector3.one * eased;
             yield return null;
         }
@@ -282,12 +328,16 @@ public class RewardManager : MonoBehaviour
     }
 
     // =========================================================================
-    // NÚT XÁC NHẬN → VỀ BEDROOM
+    // NÚT XÁC NHẬN
     // =========================================================================
 
     private void OnConfirmClicked()
     {
         Debug.Log("[RewardManager] Xac nhan — ve Bedroom.");
+
+        // Reset guard để ván chơi tiếp theo được xử lý bình thường
+        _isProcessing = false;
+
         if (rewardCanvas != null) rewardCanvas.SetActive(false);
         GameManager.Instance?.ExitGameplay();
     }

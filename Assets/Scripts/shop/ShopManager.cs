@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
-using UnityEngine.Networking;
 using TMPro;
 using Firebase;
 using Firebase.Database;
@@ -20,6 +19,20 @@ public class ShopItemData
     public int    ownerCount;
     public int    stock;
 }
+
+// =============================================================================
+// ShopManager.cs — v3
+//
+// FIX: Sau khi SaveMedals() và SavePurchase() lưu Firebase xong,
+//      gọi AuthManager.Instance.RefreshUserData() để load lại CurrentUserData
+//      từ Firebase → MedalManager, BedroomManager, AvatarWidget sẽ thấy
+//      số đúng mà không cần thoát/đăng nhập lại.
+//
+// Lý do không sync tay (ud.bronzeMedals = x):
+//   AuthManager.LoadUserData() đọc medals từ nested node "medals/bronze"
+//   bằng logic riêng — nếu ta chỉ gán thẳng vào CurrentUserData mà không
+//   reload thì các component khác subscribe OnUserDataReady sẽ không biết.
+// =============================================================================
 
 public class ShopManager : MonoBehaviour
 {
@@ -45,8 +58,8 @@ public class ShopManager : MonoBehaviour
     public TMP_Text   pageIndicatorText;
 
     [Header("Exchange Panel")]
-    public Button bronze2SilverBtn;
-    public Button silver2GoldBtn;
+    public Button   bronze2SilverBtn;
+    public Button   silver2GoldBtn;
     public TMP_Text bronzeCountText;
     public TMP_Text silverCountText;
     public TMP_Text goldCountText;
@@ -71,29 +84,36 @@ public class ShopManager : MonoBehaviour
     public Button closeBtn;
 
     [Header("Thông báo")]
-    public TMP_Text buySuccessText;      // dùng chung cho cả mua lẫn đổi huy chương
+    public TMP_Text buySuccessText;
 
+    // ── Internal ──────────────────────────────────────────────────────────────
     private List<ShopItemData> allItems     = new();
     private List<GameObject>   spawnedCards = new();
-    private const int ITEMS_PER_PAGE        = 6;
-    private int currentPage                 = 0;
+
+    private const int ITEMS_PER_PAGE  = 6;
+    private int       currentPage     = 0;
 
     private int playerCoins;
-    private int bronzeMedal, silverMedal, goldMedal;
+    private int bronzeMedal;
+    private int silverMedal;
+    private int goldMedal;
 
     public int PlayerCoins => playerCoins;
 
     private const int BRONZE_PER_SILVER = 10;
     private const int SILVER_PER_GOLD   = 20;
 
-    // ══════════════════════════════════════════════════════════
-    void Awake()
+    // =========================================================================
+    // LIFECYCLE
+    // =========================================================================
+
+    private void Awake()
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
     }
 
-    void Start()
+    private void Start()
     {
         closeBtn?.onClick.AddListener(CloseShop);
         tabShopBtn?.onClick.AddListener(() => SwitchTab(true));
@@ -110,10 +130,12 @@ public class ShopManager : MonoBehaviour
         popupSG_CloseBtn?.onClick.AddListener(() => exchangePopupSG?.SetActive(false));
 
         shopCanvas?.SetActive(false);
-
-        // Đảm bảo text thông báo ẩn lúc đầu
         buySuccessText?.gameObject.SetActive(false);
     }
+
+    // =========================================================================
+    // MỞ / ĐÓNG
+    // =========================================================================
 
     public void OpenShop()
     {
@@ -128,29 +150,30 @@ public class ShopManager : MonoBehaviour
         shopCanvas?.SetActive(false);
     }
 
-    // ══════════════════════════════════════════════════════════
+    // =========================================================================
+    // LOAD DATA
+    // =========================================================================
+
     private IEnumerator LoadAll()
     {
-        yield return StartCoroutine(LoadPlayerData());
+        // Đọc từ CurrentUserData (in-memory, không cần Firebase round-trip)
+        LoadPlayerDataFromCache();
         yield return StartCoroutine(LoadShopItems());
         RefreshUI();
     }
 
-    private IEnumerator LoadPlayerData()
+    private void LoadPlayerDataFromCache()
     {
-        string uid = FirebaseAuth.DefaultInstance?.CurrentUser?.UserId;
-        if (string.IsNullOrEmpty(uid)) yield break;
-
-        var task = FirebaseDatabase.DefaultInstance
-            .GetReference($"users/{uid}").GetValueAsync();
-        yield return new WaitUntil(() => task.IsCompleted);
-
-        if (task.Exception != null) { Debug.LogError(task.Exception); yield break; }
-        var snap = task.Result;
-        playerCoins = int.Parse(snap.Child("coins").Value?.ToString() ?? "0");
-        bronzeMedal = int.Parse(snap.Child("medals").Child("bronze").Value?.ToString() ?? "0");
-        silverMedal = int.Parse(snap.Child("medals").Child("silver").Value?.ToString() ?? "0");
-        goldMedal   = int.Parse(snap.Child("medals").Child("gold").Value?.ToString()   ?? "0");
+        var ud = AuthManager.Instance?.CurrentUserData;
+        if (ud == null)
+        {
+            playerCoins = bronzeMedal = silverMedal = goldMedal = 0;
+            return;
+        }
+        playerCoins = ud.coins;
+        bronzeMedal = ud.bronzeMedals;
+        silverMedal = ud.silverMedals;
+        goldMedal   = ud.goldMedals;
     }
 
     private IEnumerator LoadShopItems()
@@ -164,24 +187,26 @@ public class ShopManager : MonoBehaviour
         allItems.Clear();
         foreach (DataSnapshot child in task.Result.Children)
         {
-            var item = new ShopItemData
+            allItems.Add(new ShopItemData
             {
                 id          = child.Key,
-                name        = child.Child("name").Value?.ToString() ?? "",
-                price       = int.Parse(child.Child("price").Value?.ToString() ?? "0"),
-                imageUrl    = child.Child("imageUrl").Value?.ToString() ?? "",
+                name        = child.Child("name").Value?.ToString()        ?? "",
+                price       = int.Parse(child.Child("price").Value?.ToString()      ?? "0"),
+                imageUrl    = child.Child("imageUrl").Value?.ToString()    ?? "",
                 description = child.Child("description").Value?.ToString() ?? "",
                 ownerCount  = int.Parse(child.Child("ownerCount").Value?.ToString() ?? "0"),
-                stock       = int.Parse(child.Child("stock").Value?.ToString() ?? "0"),
-            };
-            allItems.Add(item);
+                stock       = int.Parse(child.Child("stock").Value?.ToString()      ?? "0"),
+            });
         }
     }
 
-    // ══════════════════════════════════════════════════════════
+    // =========================================================================
+    // UI
+    // =========================================================================
+
     private void RefreshUI()
     {
-        if (coinText) coinText.text = $"{playerCoins}";
+        if (coinText)        coinText.text        = $"{playerCoins}";
         if (bronzeCountText) bronzeCountText.text = bronzeMedal.ToString();
         if (silverCountText) silverCountText.text = silverMedal.ToString();
         if (goldCountText)   goldCountText.text   = goldMedal.ToString();
@@ -195,8 +220,7 @@ public class ShopManager : MonoBehaviour
         foreach (var c in spawnedCards) Destroy(c);
         spawnedCards.Clear();
 
-        if (itemGrid == null || !itemGrid.gameObject.activeInHierarchy)
-            return;
+        if (itemGrid == null || !itemGrid.gameObject.activeInHierarchy) return;
 
         int totalPages = Mathf.Max(1, Mathf.CeilToInt((float)allItems.Count / ITEMS_PER_PAGE));
         currentPage    = Mathf.Clamp(currentPage, 0, totalPages - 1);
@@ -227,18 +251,19 @@ public class ShopManager : MonoBehaviour
 
         Color active   = new Color(0.25f, 0.65f, 1f);
         Color inactive = new Color(0.55f, 0.55f, 0.55f);
-        if (tabShopBtn)     tabShopBtn.GetComponent<Image>().color     = isShop ? active : inactive;
+        if (tabShopBtn)     tabShopBtn.GetComponent<Image>().color     = isShop ? active   : inactive;
         if (tabExchangeBtn) tabExchangeBtn.GetComponent<Image>().color = isShop ? inactive : active;
     }
 
-    // ══════════════════════════════════════════════════════════
-    // Mua item
-    // ══════════════════════════════════════════════════════════
+    // =========================================================================
+    // MUA ITEM
+    // =========================================================================
+
     public void OnBuyItem(ShopItemData item)
     {
         if (playerCoins < item.price)
         {
-            Debug.Log("[Shop] Không đủ xu!");
+            StartCoroutine(ShowSuccessMessage("Không đủ xu!"));
             return;
         }
 
@@ -278,14 +303,18 @@ public class ShopManager : MonoBehaviour
         foreach (var t in tasks)
             yield return new WaitUntil(() => t.IsCompleted);
 
+        // ── Cập nhật CurrentUserData từ Firebase (load lại toàn bộ) ──────────
+        AuthManager.Instance?.RefreshUserData();
+
         RefreshUI();
         BuildPage();
-        StartCoroutine(ShowSuccessMessage($"✓ Mua thành công: {item.name}"));  // ← thêm
+        StartCoroutine(ShowSuccessMessage($" Mua thành công: {item.name}"));
     }
 
-    // ══════════════════════════════════════════════════════════
-    // Đổi huy chương
-    // ══════════════════════════════════════════════════════════
+    // =========================================================================
+    // ĐỔI HUY CHƯƠNG
+    // =========================================================================
+
     private void OpenExchangePopup(bool isBronzeToSilver)
     {
         if (isBronzeToSilver)
@@ -314,7 +343,10 @@ public class ShopManager : MonoBehaviour
         if (isBronzeToSilver)
         {
             if (bronzeMedal < BRONZE_PER_SILVER)
-            { Debug.Log("[Shop] Không đủ huy chương đồng!"); return; }
+            {
+                StartCoroutine(ShowSuccessMessage("Không đủ huy chương đồng!"));
+                return;
+            }
             bronzeMedal -= BRONZE_PER_SILVER;
             silverMedal += 1;
             exchangePopupBS?.SetActive(false);
@@ -322,7 +354,10 @@ public class ShopManager : MonoBehaviour
         else
         {
             if (silverMedal < SILVER_PER_GOLD)
-            { Debug.Log("[Shop] Không đủ huy chương bạc!"); return; }
+            {
+                StartCoroutine(ShowSuccessMessage("Không đủ huy chương bạc!"));
+                return;
+            }
             silverMedal -= SILVER_PER_GOLD;
             goldMedal   += 1;
             exchangePopupSG?.SetActive(false);
@@ -339,17 +374,30 @@ public class ShopManager : MonoBehaviour
             ["medals/silver"] = silverMedal,
             ["medals/gold"]   = goldMedal,
         };
+
         var task = FirebaseDatabase.DefaultInstance
             .GetReference($"users/{uid}").UpdateChildrenAsync(updates);
         yield return new WaitUntil(() => task.IsCompleted);
 
+        if (task.Exception != null)
+        {
+            Debug.LogError($"[ShopManager] Luu medals loi: {task.Exception}");
+            yield break;
+        }
+
+        // ── KEY FIX: Load lại CurrentUserData từ Firebase sau khi lưu xong ──
+        // AuthManager.LoadUserData() đọc nested medals/bronze đúng cách
+        // và fire OnUserDataReady → BedroomManager, AvatarWidget tự cập nhật
+        AuthManager.Instance?.RefreshUserData();
+
         RefreshUI();
-        StartCoroutine(ShowSuccessMessage(" Đổi huy chương thành công!"));  // ← thêm
+        StartCoroutine(ShowSuccessMessage(" Đổi huy chương thành công!"));
     }
 
-    // ══════════════════════════════════════════════════════════
-    // Coroutine hiển thị thông báo — dùng chung
-    // ══════════════════════════════════════════════════════════
+    // =========================================================================
+    // THÔNG BÁO
+    // =========================================================================
+
     private IEnumerator ShowSuccessMessage(string message)
     {
         if (buySuccessText == null) yield break;

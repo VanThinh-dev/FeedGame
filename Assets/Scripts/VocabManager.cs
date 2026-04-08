@@ -6,11 +6,18 @@ using Firebase.Database;
 using Firebase.Extensions;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VocabManager.cs — v4
+// VocabManager.cs — v5  (FIXED)
 //
-// FIX so với v3:
-//   • LoadVocabForLesson() gọi BedroomManager.EnterGameplay() TRƯỚC khi
-//     StartGameWithVocab() → tránh BedroomCanvas che gameplay
+// FIX so với v4:
+//   • LoadCompletedLessonsFromFirebase() đọc trực tiếp từ Firebase
+//     thay vì dùng CurrentUserData (hay bị null/stale).
+//   • Dùng callback chain: load completedIds XONG → mới load lessons
+//     → đảm bảo isCompleted được gán đúng.
+//   • Xoá daHocPanel / chuaHocPanel khỏi VocabManager — việc show/hide panel
+//     chỉ do VocabCanvasController đảm nhiệm, tránh double-reference conflict.
+//   • OpenVocabCanvas() reload completedIds từ Firebase trước khi build cards.
+//   • MarkLessonCompleted() cập nhật local completedIds ngay lập tức rồi
+//     rebuild cards để tab phản ánh đúng trạng thái.
 // ─────────────────────────────────────────────────────────────────────────────
 
 public class VocabManager : MonoBehaviour
@@ -20,10 +27,6 @@ public class VocabManager : MonoBehaviour
     [Header("Root canvas — kéo VocabCanvas vào đây")]
     [SerializeField] public GameObject vocabCanvas;
 
-    [Header("Tab Panels")]
-    [SerializeField] public GameObject daHocPanel;
-    [SerializeField] public GameObject chuaHocPanel;
-
     [Header("ScrollView Content (có GridLayoutGroup)")]
     [SerializeField] public Transform daHocContent;
     [SerializeField] public Transform chuaHocContent;
@@ -31,14 +34,19 @@ public class VocabManager : MonoBehaviour
     [Header("Prefab card — kéo LessonCardPrefab vào đây")]
     [SerializeField] public GameObject lessonCardPrefab;
 
+    // ── Events ────────────────────────────────────────────────────────────────
     public event Action<List<LessonData>, List<LessonData>> OnLessonsLoaded;
 
+    // ── Internal state ────────────────────────────────────────────────────────
     private List<LessonData> allLessons       = new List<LessonData>();
     private List<LessonData> completedLessons = new List<LessonData>();
     private List<LessonData> pendingLessons   = new List<LessonData>();
     private HashSet<string>  completedIds     = new HashSet<string>();
 
     // ═════════════════════════════════════════════════════════════════════════
+    // LIFECYCLE
+    // ═════════════════════════════════════════════════════════════════════════
+
     private void Awake()
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
@@ -56,25 +64,55 @@ public class VocabManager : MonoBehaviour
         while (!AuthManager.Instance.IsLoggedIn)
             yield return null;
 
-        Debug.Log("[VocabManager] ✅ Sẵn sàng load lessons.");
-        LoadCompletedLessonsFromUser();
-        LoadLessonsFromFirebase();
+        Debug.Log("[VocabManager]  Sẵn sàng load lessons.");
+
+        // Luôn load completedIds từ Firebase trước, sau đó mới load lessons
+        LoadCompletedLessonsFromFirebase(onDone: LoadLessonsFromFirebase);
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // LOAD DATA
+    // LOAD COMPLETED IDS — đọc thẳng từ Firebase (không dùng cache UserData)
     // ═════════════════════════════════════════════════════════════════════════
 
-    private void LoadCompletedLessonsFromUser()
+    /// <summary>
+    /// Đọc node users/{uid}/completedLessons từ Firebase.
+    /// Sau khi xong sẽ gọi onDone() nếu có.
+    /// </summary>
+    private void LoadCompletedLessonsFromFirebase(Action onDone = null)
     {
-        completedIds.Clear();
-        var userData = AuthManager.Instance?.CurrentUserData;
-        if (userData?.completedLessons != null)
-            foreach (var id in userData.completedLessons)
-                completedIds.Add(id);
+        var uid = AuthManager.Instance?.CurrentUser?.UserId;
+        if (string.IsNullOrEmpty(uid))
+        {
+            Debug.LogWarning("[VocabManager] Chưa có uid, bỏ qua load completedLessons.");
+            onDone?.Invoke();
+            return;
+        }
 
-        Debug.Log($"[VocabManager] completedIds: {completedIds.Count}");
+        FirebaseDatabase.DefaultInstance.RootReference
+            .Child("users").Child(uid).Child("completedLessons")
+            .GetValueAsync()
+            .ContinueWithOnMainThread(task =>
+            {
+                completedIds.Clear();
+
+                if (task.IsCompletedSuccessfully && task.Result.Exists)
+                {
+                    foreach (var child in task.Result.Children)
+                    {
+                        // Giá trị true hoặc key tồn tại đều tính là completed
+                        if (child.Value?.ToString() == "true" || child.Exists)
+                            completedIds.Add(child.Key);
+                    }
+                }
+
+                Debug.Log($"[VocabManager] completedIds từ Firebase: {completedIds.Count}");
+                onDone?.Invoke();
+            });
     }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // LOAD LESSONS — chỉ gọi SAU KHI completedIds đã sẵn sàng
+    // ═════════════════════════════════════════════════════════════════════════
 
     public void LoadLessonsFromFirebase()
     {
@@ -103,13 +141,17 @@ public class VocabManager : MonoBehaviour
                     {
                         id        = child.Key,
                         name      = child.Child("name").Value?.ToString()      ?? "Bài học",
-                        wordCount = int.TryParse(child.Child("wordCount").Value?.ToString(), out int wc) ? wc : 0,
+                        wordCount = int.TryParse(
+                                        child.Child("wordCount").Value?.ToString(),
+                                        out int wc) ? wc : 0,
                         createdAt = child.Child("createdAt").Value?.ToString() ?? ""
                     };
 
+                    // Fallback: đếm số từ trong node words nếu wordCount == 0
                     if (lesson.wordCount == 0 && child.Child("words").ChildrenCount > 0)
                         lesson.wordCount = (int)child.Child("words").ChildrenCount;
 
+                    // ✅ FIX: dùng completedIds đã load từ Firebase
                     lesson.isCompleted = completedIds.Contains(lesson.id);
                     allLessons.Add(lesson);
 
@@ -117,7 +159,9 @@ public class VocabManager : MonoBehaviour
                     else                    pendingLessons.Add(lesson);
                 }
 
-                Debug.Log($"[VocabManager] Tổng: {allLessons.Count} | Đã học: {completedLessons.Count} | Chưa học: {pendingLessons.Count}");
+                Debug.Log($"[VocabManager] Tổng: {allLessons.Count} " +
+                          $"| Đã học: {completedLessons.Count} " +
+                          $"| Chưa học: {pendingLessons.Count}");
 
                 BuildLessonCards();
                 OnLessonsLoaded?.Invoke(completedLessons, pendingLessons);
@@ -132,7 +176,7 @@ public class VocabManager : MonoBehaviour
     {
         if (lessonCardPrefab == null)
         {
-            Debug.LogWarning("[VocabManager] ❌ lessonCardPrefab chưa gán!");
+            Debug.LogWarning("[VocabManager]  lessonCardPrefab chưa gán!");
             return;
         }
         BuildCardList(daHocContent,   completedLessons);
@@ -143,14 +187,18 @@ public class VocabManager : MonoBehaviour
     {
         if (container == null) return;
 
-        foreach (Transform child in container)
-            Destroy(child.gameObject);
+        // Xoá card cũ
+        for (int i = container.childCount - 1; i >= 0; i--)
+            Destroy(container.GetChild(i).gameObject);
 
         foreach (var lesson in lessons)
         {
             var go   = Instantiate(lessonCardPrefab, container);
             var card = go.GetComponent<LessonCard>();
-            if (card != null) card.Setup(lesson, OnLessonCardTapped);
+            if (card != null)
+                card.Setup(lesson, OnLessonCardTapped);
+            else
+                Debug.LogWarning("[VocabManager] LessonCardPrefab thiếu component LessonCard!");
         }
     }
 
@@ -202,7 +250,7 @@ public class VocabManager : MonoBehaviour
 
                 Debug.Log($"[VocabManager] Load được {words.Count} từ → chuyển sang gameplay.");
 
-                // ── Thứ tự quan trọng ─────────────────────────────────────
+                // Thứ tự quan trọng:
                 // 1. Đóng VocabCanvas
                 CloseVocabCanvas();
                 // 2. Ẩn BedroomCanvas (tránh che gameplay)
@@ -219,20 +267,36 @@ public class VocabManager : MonoBehaviour
     public void MarkLessonCompleted(string lessonId)
     {
         if (completedIds.Contains(lessonId)) return;
+
+        // Cập nhật local ngay lập tức
         completedIds.Add(lessonId);
+
+        // Cập nhật card trong danh sách allLessons
+        foreach (var lesson in allLessons)
+        {
+            if (lesson.id == lessonId)
+            {
+                lesson.isCompleted = true;
+                break;
+            }
+        }
 
         var uid = AuthManager.Instance?.CurrentUser?.UserId;
         if (string.IsNullOrEmpty(uid)) return;
 
+        // Ghi lên Firebase
         FirebaseDatabase.DefaultInstance.RootReference
             .Child("users").Child(uid).Child("completedLessons").Child(lessonId)
             .SetValueAsync(true)
             .ContinueWithOnMainThread(task =>
             {
                 if (task.IsCompletedSuccessfully)
-                    Debug.Log($"[VocabManager] ✅ Đánh dấu hoàn thành: {lessonId}");
+                    Debug.Log($"[VocabManager]  Đánh dấu hoàn thành: {lessonId}");
+                else
+                    Debug.LogError($"[VocabManager]  Lỗi ghi completedLesson: {task.Exception}");
             });
 
+        // Rebuild cards nếu canvas đang mở để tab phản ánh đúng
         if (vocabCanvas != null && vocabCanvas.activeSelf)
             LoadLessonsFromFirebase();
     }
@@ -243,11 +307,16 @@ public class VocabManager : MonoBehaviour
 
     public void OpenVocabCanvas()
     {
-        if (vocabCanvas == null) { Debug.LogWarning("[VocabManager] vocabCanvas chưa gán!"); return; }
+        if (vocabCanvas == null)
+        {
+            Debug.LogWarning("[VocabManager] vocabCanvas chưa gán!");
+            return;
+        }
+
         vocabCanvas.SetActive(true);
-        ShowTabChuaHoc();
-        LoadCompletedLessonsFromUser();
-        LoadLessonsFromFirebase();
+
+        // ✅ FIX: load completedIds mới nhất từ Firebase TRƯỚC khi build cards
+        LoadCompletedLessonsFromFirebase(onDone: LoadLessonsFromFirebase);
     }
 
     public void CloseVocabCanvas()
@@ -255,15 +324,10 @@ public class VocabManager : MonoBehaviour
         if (vocabCanvas != null) vocabCanvas.SetActive(false);
     }
 
-    public void ShowTabDaHoc()
-    {
-        if (daHocPanel   != null) daHocPanel.SetActive(true);
-        if (chuaHocPanel != null) chuaHocPanel.SetActive(false);
-    }
-
-    public void ShowTabChuaHoc()
-    {
-        if (daHocPanel   != null) daHocPanel.SetActive(false);
-        if (chuaHocPanel != null) chuaHocPanel.SetActive(true);
-    }
+    // ── Tab switching — giữ lại để VocabCanvasController vẫn gọi được ─────────
+    // ✅ FIX: bỏ việc bật/tắt daHocPanel/chuaHocPanel ở đây.
+    //    VocabCanvasController sẽ là nơi duy nhất điều khiển panels.
+    //    Hai hàm này giữ lại để không breaking nếu code khác đang gọi.
+    public void ShowTabDaHoc()   { /* Panel switching handled by VocabCanvasController */ }
+    public void ShowTabChuaHoc() { /* Panel switching handled by VocabCanvasController */ }
 }
