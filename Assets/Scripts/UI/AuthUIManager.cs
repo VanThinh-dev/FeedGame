@@ -1,17 +1,11 @@
 using System.Collections;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using TMPro;
 
 // =============================================================================
 // AuthUIManager.cs — FIX BUTTONS + FIX CURSOR + TAB/ENTER NAVIGATION
-//
-// TÍNH NĂNG MỚI:
-//   • Nhấn Enter hoặc Tab tại mỗi field → focus sang field tiếp theo
-//   • Login  : Email → Password → [Submit]
-//   • Register: Name → Email → Password → Confirm → [Submit]
-//   • Hoạt động trên cả Android (keyboard Next) lẫn Laptop (Tab/Enter)
-//   • onSubmit bắt Enter | Update() bắt Tab | lineType=SingleLine trên tất cả
 // =============================================================================
 
 public class AuthUIManager : MonoBehaviour
@@ -37,7 +31,6 @@ public class AuthUIManager : MonoBehaviour
     [SerializeField] private Button         goToLoginButton;
     [SerializeField] private TMP_Text       registerErrorText;
 
-    // field đang được focus — để Update() biết Tab đang ở đâu
     private TMP_InputField _tabFocused;
 
     // =========================================================================
@@ -46,7 +39,6 @@ public class AuthUIManager : MonoBehaviour
 
     private void Awake()
     {
-        // ── onClick ───────────────────────────────────────────────────────────
         if (loginButton)        loginButton.onClick.AddListener(OnLoginButtonClicked);
         if (registerButton)     registerButton.onClick.AddListener(OnRegisterButtonClicked);
         if (goToRegisterButton) goToRegisterButton.onClick.AddListener(OnGoToRegisterClicked);
@@ -54,7 +46,6 @@ public class AuthUIManager : MonoBehaviour
 
         SetButtonsInteractable(true);
 
-        // ── Cursor ────────────────────────────────────────────────────────────
         FixCaret(loginEmailInput);
         FixCaret(loginPasswordInput);
         FixCaret(registerNameInput);
@@ -62,16 +53,13 @@ public class AuthUIManager : MonoBehaviour
         FixCaret(registerPasswordInput);
         FixCaret(registerConfirmPasswordInput);
 
-        // ── Tab / Enter navigation ────────────────────────────────────────────
-        // Login chain
-        BindTabField(loginEmailInput,    () => FocusField(loginPasswordInput));
-        BindTabField(loginPasswordInput, () => OnLoginButtonClicked());
-
-        // Register chain
-        BindTabField(registerNameInput,            () => FocusField(registerEmailInput));
-        BindTabField(registerEmailInput,           () => FocusField(registerPasswordInput));
-        BindTabField(registerPasswordInput,        () => FocusField(registerConfirmPasswordInput));
-        BindTabField(registerConfirmPasswordInput, () => OnRegisterButtonClicked());
+        // Tab / Enter navigation
+        BindTabField(loginEmailInput,             () => FocusField(loginPasswordInput));
+        BindTabField(loginPasswordInput,          () => OnLoginButtonClicked());
+        BindTabField(registerNameInput,           () => FocusField(registerEmailInput));
+        BindTabField(registerEmailInput,          () => FocusField(registerPasswordInput));
+        BindTabField(registerPasswordInput,       () => FocusField(registerConfirmPasswordInput));
+        BindTabField(registerConfirmPasswordInput,() => OnRegisterButtonClicked());
     }
 
     private void Start()
@@ -82,13 +70,10 @@ public class AuthUIManager : MonoBehaviour
         StartCoroutine(BindAuthEvents());
     }
 
-    // Bắt phím Tab trên laptop
-    // TMP_InputField không xử lý Tab nên phải bắt thủ công ở Update
     private void Update()
     {
         if (_tabFocused == null) return;
         if (!Input.GetKeyDown(KeyCode.Tab)) return;
-        // Gọi onSubmit listener đã gán — cùng logic với Enter
         _tabFocused.onSubmit.Invoke(_tabFocused.text);
     }
 
@@ -116,10 +101,6 @@ public class AuthUIManager : MonoBehaviour
     // TAB / ENTER HELPERS
     // =========================================================================
 
-    // Gán navigation cho 1 field:
-    //   lineType  = SingleLine → Enter sinh onSubmit thay vì xuống dòng
-    //   onSubmit  → gọi onNext (focus field kế hoặc Submit)
-    //   onSelect  → lưu vào _tabFocused để Update() bắt Tab
     private void BindTabField(TMP_InputField field, System.Action onNext)
     {
         if (field == null) return;
@@ -150,16 +131,14 @@ public class AuthUIManager : MonoBehaviour
 
     private IEnumerator BindAuthEvents()
     {
-        while (AuthManager.Instance == null)
-            yield return null;
-        while (!AuthManager.Instance.IsInitialized)
-            yield return null;
+        while (AuthManager.Instance == null)          yield return null;
+        while (!AuthManager.Instance.IsInitialized)   yield return null;
 
         AuthManager.Instance.OnLoginSuccess += HandleLoginSuccess;
         AuthManager.Instance.OnAuthError    += HandleAuthError;
         AuthManager.Instance.OnLogout       += HandleLogout;
 
-        Debug.Log("[AuthUIManager] ✅ Events bound.");
+        Debug.Log("[AuthUIManager] Events bound.");
     }
 
     // =========================================================================
@@ -255,7 +234,6 @@ public class AuthUIManager : MonoBehaviour
     {
         if (AuthManager.Instance == null)
         {
-            Debug.LogError("[AuthUIManager] AuthManager.Instance là null!");
             var lbl = (loginPanel != null && loginPanel.activeSelf) ? loginErrorText : registerErrorText;
             ShowError(lbl, "Hệ thống chưa sẵn sàng, vui lòng đợi...");
             return false;
@@ -269,14 +247,62 @@ public class AuthUIManager : MonoBehaviour
         return true;
     }
 
+    /// <summary>
+    /// Fix caret hiển thị trên cả PC lẫn Android.
+    /// Android yêu cầu customCaretColor = true + alpha = 1 + caretWidth >= 2.
+    /// </summary>
     private void FixCaret(TMP_InputField field)
+{
+    if (field == null) return;
+
+    field.customCaretColor = true;
+    
+    // FIX 1: Đặt màu với alpha = 1 rõ ràng
+    Color caretCol = Color.black;
+    caretCol.a = 1f;
+    field.caretColor = caretCol;
+    
+    field.caretWidth = 4;
+    field.caretBlinkRate = 0.85f;
+
+    // FIX 2: shouldHideMobileInput = TRUE trên Android
+    // false sẽ dùng native overlay, ẩn caret Unity
+#if UNITY_ANDROID
+    field.shouldHideMobileInput = true;
+#else
+    field.shouldHideMobileInput = false;
+#endif
+
+    // FIX 3: Chỉ bind 1 nơi, bỏ AddPointerDownActivation riêng
+    field.onSelect.AddListener(_ => StartCoroutine(ForceActivateCaret(field)));
+}
+
+    // Đợi 2 frame rồi mới activate để caret render đúng trên Android
+    private IEnumerator ForceActivateCaret(TMP_InputField field)
+{
+    if (field == null) yield break;
+    
+    // FIX 4: Đợi đủ frame trên Android (cần nhiều hơn 2)
+    yield return null;
+    yield return null;
+    yield return null; // thêm 1 frame nữa cho Android
+
+    if (field == null || !field.gameObject.activeInHierarchy) yield break;
+
+    field.ActivateInputField();
+    
+    yield return null;
+
+    // FIX 5: Force lại caretColor sau khi activate vì TMP bug
+    if (field != null && field.isFocused)
     {
-        if (field == null) return;
         field.customCaretColor = true;
-        field.caretColor       = new Color(0.1f, 0.1f, 0.1f, 1f);
-        field.caretWidth       = 2;
-        field.caretBlinkRate   = 0.85f;
+        Color c = field.caretColor;
+        c.a = 1f;
+        field.caretColor = c;
+        field.ForceLabelUpdate();
     }
+}
 
     private void SetButtonsInteractable(bool on)
     {

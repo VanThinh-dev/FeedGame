@@ -33,7 +33,6 @@ public class AddLessonPanel : MonoBehaviour
     private static readonly Color COL_ROW_ODD  = new Color(0.96f, 0.96f, 0.96f, 1f);
     private static readonly Color COL_ROW_EVEN = new Color(0.89f, 0.89f, 0.89f, 1f);
 
-    // Sprite tron dung chung cho tat ca DeleteButton, tao 1 lan
     private static Sprite _circleSprite;
 
     private readonly List<(TMP_InputField eng, TMP_InputField viet, GameObject row)> rows
@@ -48,6 +47,8 @@ public class AddLessonPanel : MonoBehaviour
         if (addRowButton != null) addRowButton.onClick.AddListener(AddRow);
         if (saveButton   != null) saveButton.onClick.AddListener(OnSave);
         if (closeButton  != null) closeButton.onClick.AddListener(ClosePanel);
+
+        FixCaret(inputField_LessonName);
     }
 
     private void OnEnable()
@@ -63,10 +64,79 @@ public class AddLessonPanel : MonoBehaviour
         _tabFocused.onSubmit.Invoke(_tabFocused.text);
     }
 
+    // =========================================================================
+    // CARET FIX (PC + Android)
+    // =========================================================================
+
+    private void FixCaret(TMP_InputField field)
+    {
+        if (field == null) return;
+
+        field.customCaretColor = true;
+
+        // FIX: Đặt alpha = 1 rõ ràng, tránh bị reset về 0 trên Android
+        Color caretCol = Color.black;
+        caretCol.a = 1f;
+        field.caretColor = caretCol;
+
+        field.caretWidth     = 4;      // rộng hơn để thấy rõ trên mobile
+        field.caretBlinkRate = 0.85f;
+
+        // FIX QUAN TRỌNG NHẤT:
+        // shouldHideMobileInput = true trên Android
+        // Khi = false, Android dùng native overlay → Unity KHÔNG render caret của mình
+#if UNITY_ANDROID && !UNITY_EDITOR
+        field.shouldHideMobileInput = true;
+#else
+        field.shouldHideMobileInput = false;
+#endif
+
+        // Chỉ bind onSelect — KHÔNG dùng AddPointerDownActivation
+        // vì nó gây double-call coroutine → race condition → caret bị tắt
+        field.onSelect.AddListener(_ => StartCoroutine(ForceActivateCaret(field)));
+    }
+
+    private IEnumerator ForceActivateCaret(TMP_InputField field)
+    {
+        if (field == null) yield break;
+
+        // Đợi 3 frame — Android cần nhiều hơn PC để settle UI
+        yield return null;
+        yield return null;
+        yield return null;
+
+        if (field == null || !field.gameObject.activeInHierarchy) yield break;
+
+        field.ActivateInputField();
+
+        yield return null;
+
+        // FIX: Force lại caretColor sau ActivateInputField
+        // TMP có bug reset alpha về 0 sau khi activate trên Android
+        if (field != null && field.isFocused)
+        {
+            field.customCaretColor = true;
+            Color c = field.caretColor;
+            c.a = 1f;
+            field.caretColor = c;
+            field.ForceLabelUpdate();
+
+            Debug.Log($"[Caret] name={field.name} | isFocused={field.isFocused} | alpha={field.caretColor.a} | customCaret={field.customCaretColor} | caretWidth={field.caretWidth}");
+        }
+        else
+        {
+            Debug.LogWarning($"[Caret] FAILED — name={field?.name} | isFocused={field?.isFocused} | active={field?.gameObject.activeInHierarchy}");
+        }
+    }
+
+    // =========================================================================
+    // ROW MANAGEMENT
+    // =========================================================================
+
     public void AddRow()
     {
         if (wordListContent == null) { Debug.LogError("[AddLessonPanel] wordListContent chua gan!"); return; }
-        if (wordRowPrefab   == null) { Debug.LogError("[AddLessonPanel] wordRowPrefab chua gan! Chay Tools > AddLessonPanel Builder."); return; }
+        if (wordRowPrefab   == null) { Debug.LogError("[AddLessonPanel] wordRowPrefab chua gan!"); return; }
 
         var rowGO = Instantiate(wordRowPrefab, wordListContent);
         rowGO.name = $"WordRow_{rows.Count + 1}";
@@ -87,7 +157,9 @@ public class AddLessonPanel : MonoBehaviour
         eng.text  = "";
         viet.text = "";
 
-        // Style nut xoa thanh hinh tron do
+        FixCaret(eng);
+        FixCaret(viet);
+
         var delBtn = rowGO.transform.Find("DeleteButton")?.GetComponent<Button>();
         if (delBtn != null)
         {
@@ -103,82 +175,6 @@ public class AddLessonPanel : MonoBehaviour
 
         if (wordScrollRect != null)
             LayoutRebuilder.ForceRebuildLayoutImmediate(wordListContent.GetComponent<RectTransform>());
-    }
-
-    // -------------------------------------------------------------------------
-    // Ve sprite hinh tron bang Texture2D (khong can asset)
-    // -------------------------------------------------------------------------
-    private static Sprite CreateCircleSprite(int size)
-    {
-        var tex    = new Texture2D(size, size, TextureFormat.RGBA32, false);
-        var pixels = new Color32[size * size];
-        float r    = size / 2f;
-        float cx   = r, cy = r;
-
-        for (int y = 0; y < size; y++)
-        for (int x = 0; x < size; x++)
-        {
-            float dx   = x - cx + 0.5f;
-            float dy   = y - cy + 0.5f;
-            float dist = Mathf.Sqrt(dx * dx + dy * dy);
-            // Anti-alias o bien
-            float alpha = Mathf.Clamp01(r - dist);
-            pixels[y * size + x] = new Color32(255, 255, 255, (byte)(alpha * 255));
-        }
-
-        tex.SetPixels32(pixels);
-        tex.Apply();
-
-        return Sprite.Create(
-            tex,
-            new Rect(0, 0, size, size),
-            new Vector2(0.5f, 0.5f),
-            size   // pixels per unit = size -> sprite co normalized size 1x1
-        );
-    }
-
-    // -------------------------------------------------------------------------
-    // Ap dung sprite tron + mau do len DeleteButton
-    // -------------------------------------------------------------------------
-    private static void StyleDeleteButton(Button btn)
-    {
-        var btnImg = btn.GetComponent<Image>();
-        if (btnImg == null) btnImg = btn.gameObject.AddComponent<Image>();
-
-        btnImg.sprite = _circleSprite;
-        btnImg.color  = new Color(0.88f, 0.22f, 0.22f, 1f); // do tuoi
-        btnImg.type   = Image.Type.Simple;
-        btnImg.preserveAspect = true;
-
-        // Transition mau khi hover / press
-        var colors           = btn.colors;
-        colors.normalColor   = new Color(0.88f, 0.22f, 0.22f, 1f);
-        colors.highlightedColor = new Color(1f,  0.35f, 0.35f, 1f);
-        colors.pressedColor  = new Color(0.60f, 0.10f, 0.10f, 1f);
-        colors.selectedColor = colors.normalColor;
-        btn.colors           = colors;
-
-        // RectTransform: ep vuong 30x30 de tron deu
-        var rect = btn.GetComponent<RectTransform>();
-        if (rect != null) rect.sizeDelta = new Vector2(30f, 30f);
-
-        // LayoutElement: giu chieu rong co dinh, khong bi gian
-        var le = btn.GetComponent<LayoutElement>();
-        if (le == null) le = btn.gameObject.AddComponent<LayoutElement>();
-        le.minWidth       = 30f;
-        le.preferredWidth = 30f;
-        le.flexibleWidth  = 0f;
-
-        // Text X: dam, can giua
-        var textTMP = btn.GetComponentInChildren<TextMeshProUGUI>();
-        if (textTMP != null)
-        {
-            textTMP.text      = "X";       // ky tu X dep hon
-            textTMP.fontSize  = 13f;
-            textTMP.fontStyle = FontStyles.Bold;
-            textTMP.alignment = TextAlignmentOptions.Center;
-            textTMP.color     = Color.white;
-        }
     }
 
     private void RemoveRow(GameObject rowGO)
@@ -197,6 +193,10 @@ public class AddLessonPanel : MonoBehaviour
 
         RebindAllTabNavigation();
     }
+
+    // =========================================================================
+    // TAB NAVIGATION
+    // =========================================================================
 
     private void BindRowTabNavigation(int i)
     {
@@ -229,6 +229,73 @@ public class AddLessonPanel : MonoBehaviour
             BindRowTabNavigation(i);
     }
 
+    // =========================================================================
+    // DELETE BUTTON STYLE
+    // =========================================================================
+
+    private static Sprite CreateCircleSprite(int size)
+    {
+        var tex    = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        var pixels = new Color32[size * size];
+        float r    = size / 2f;
+        float cx   = r, cy = r;
+
+        for (int y = 0; y < size; y++)
+        for (int x = 0; x < size; x++)
+        {
+            float dx    = x - cx + 0.5f;
+            float dy    = y - cy + 0.5f;
+            float dist  = Mathf.Sqrt(dx * dx + dy * dy);
+            float alpha = Mathf.Clamp01(r - dist);
+            pixels[y * size + x] = new Color32(255, 255, 255, (byte)(alpha * 255));
+        }
+
+        tex.SetPixels32(pixels);
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
+    }
+
+    private static void StyleDeleteButton(Button btn)
+    {
+        var btnImg = btn.GetComponent<Image>();
+        if (btnImg == null) btnImg = btn.gameObject.AddComponent<Image>();
+
+        btnImg.sprite         = _circleSprite;
+        btnImg.color          = new Color(0.88f, 0.22f, 0.22f, 1f);
+        btnImg.type           = Image.Type.Simple;
+        btnImg.preserveAspect = true;
+
+        var colors              = btn.colors;
+        colors.normalColor      = new Color(0.88f, 0.22f, 0.22f, 1f);
+        colors.highlightedColor = new Color(1f,    0.35f, 0.35f, 1f);
+        colors.pressedColor     = new Color(0.60f, 0.10f, 0.10f, 1f);
+        colors.selectedColor    = colors.normalColor;
+        btn.colors              = colors;
+
+        var rect = btn.GetComponent<RectTransform>();
+        if (rect != null) rect.sizeDelta = new Vector2(30f, 30f);
+
+        var le = btn.GetComponent<LayoutElement>();
+        if (le == null) le = btn.gameObject.AddComponent<LayoutElement>();
+        le.minWidth       = 30f;
+        le.preferredWidth = 30f;
+        le.flexibleWidth  = 0f;
+
+        var textTMP = btn.GetComponentInChildren<TextMeshProUGUI>();
+        if (textTMP != null)
+        {
+            textTMP.text      = "X";
+            textTMP.fontSize  = 13f;
+            textTMP.fontStyle = FontStyles.Bold;
+            textTMP.alignment = TextAlignmentOptions.Center;
+            textTMP.color     = Color.white;
+        }
+    }
+
+    // =========================================================================
+    // SAVE
+    // =========================================================================
+
     private void OnSave()
     {
         if (FirebaseManager.Instance == null || !FirebaseManager.Instance.IsInitialized) { SetStatus("(!) Firebase chua san sang!", Color.red); return; }
@@ -258,8 +325,8 @@ public class AddLessonPanel : MonoBehaviour
 
         lessonRef.SetValueAsync(new Dictionary<string, object>
         {
-            { "name",      lessonName                   },
-            { "wordCount", validWords.Count              },
+            { "name",      lessonName                    },
+            { "wordCount", validWords.Count               },
             { "createdAt", DateTime.UtcNow.ToString("o") }
         })
         .ContinueWithOnMainThread(lt =>
@@ -295,6 +362,10 @@ public class AddLessonPanel : MonoBehaviour
             });
         });
     }
+
+    // =========================================================================
+    // MISC
+    // =========================================================================
 
     private void SetStatus(string msg, Color color)
     {
